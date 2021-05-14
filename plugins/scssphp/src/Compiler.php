@@ -391,12 +391,22 @@ class Compiler
     protected function makeOutputBlock($type, $selectors = null)
     {
         $out = new OutputBlock;
-        $out->type      = $type;
-        $out->lines     = [];
-        $out->children  = [];
-        $out->parent    = $this->scope;
-        $out->selectors = $selectors;
-        $out->depth     = $this->env->depth;
+        $out->type         = $type;
+        $out->lines        = [];
+        $out->children     = [];
+        $out->parent       = $this->scope;
+        $out->selectors    = $selectors;
+        $out->depth        = $this->env->depth;
+
+        if ($this->env->block instanceof Block) {
+            $out->sourceName   = $this->env->block->sourceName;
+            $out->sourceLine   = $this->env->block->sourceLine;
+            $out->sourceColumn = $this->env->block->sourceColumn;
+        } else {
+            $out->sourceName   = null;
+            $out->sourceLine   = null;
+            $out->sourceColumn = null;
+        }
 
         if ($this->env->block instanceof Block) {
             $out->sourceName   = $this->env->block->sourceName;
@@ -857,6 +867,39 @@ class Compiler
         }
 
         return $found;
+    }
+
+
+    /**
+     * Extract a relationship from the fragment.
+     *
+     * When extracting the last portion of a selector we will be left with a
+     * fragment which may end with a direction relationship combinator. This
+     * method will extract the relationship fragment and return it along side
+     * the rest.
+     *
+     * @param array $fragment The selector fragment maybe ending with a direction relationship combinator.
+     * @return array The selector without the relationship fragment if any, the relationship fragment.
+     */
+    protected function extractRelationshipFromFragment(array $fragment)
+    {
+        $parents = [];
+        $children = [];
+        $j = $i = count($fragment);
+
+        for (;;) {
+            $children = $j != $i ? array_slice($fragment, $j, $i - $j) : [];
+            $parents = array_slice($fragment, 0, $j);
+            $slice = end($parents);
+
+            if (empty($slice) || ! $this->isImmediateRelationshipCombinator($slice[0])) {
+                break;
+            }
+
+            $j -= 2;
+        }
+
+        return [$parents, $children];
     }
 
     /**
@@ -2160,6 +2203,37 @@ class Compiler
         return $out;
     }
 
+    protected function mergeDirectRelationships($selectors1, $selectors2)
+    {
+        if (empty($selectors1) || empty($selectors2)) {
+            return array_merge($selectors1, $selectors2);
+        }
+
+        $part1 = end($selectors1);
+        $part2 = end($selectors2);
+
+        if (! $this->isImmediateRelationshipCombinator($part1[0]) || $part1 !== $part2) {
+            return array_merge($selectors1, $selectors2);
+        }
+
+        $merged = [];
+
+        do {
+            $part1 = array_pop($selectors1);
+            $part2 = array_pop($selectors2);
+
+            if ($this->isImmediateRelationshipCombinator($part1[0]) && $part1 !== $part2) {
+                $merged = array_merge($selectors1, [$part1], $selectors2, [$part2], $merged);
+                break;
+            }
+
+            array_unshift($merged, $part1);
+            array_unshift($merged, [array_pop($selectors1)[0] . array_pop($selectors2)[0]]);
+        } while (! empty($selectors1) && ! empty($selectors2));
+
+        return $merged;
+    }
+
     /**
      * Merge direct relationships between selectors
      *
@@ -2866,6 +2940,8 @@ class Compiler
                 }
 
                 $this->compileChildrenNoReturn($mixin->children, $out, $selfParent, $this->env->marker . " " . $name);
+
+                $this->storeEnv = $storeEnv;
 
                 $this->popEnv();
                 break;
@@ -4715,6 +4791,8 @@ class Compiler
             }
         }
 
+        $hasExtension = preg_match('/[.]s?css$/', $url);
+
         foreach ($this->importPaths as $dir) {
             if (\is_string($dir)) {
                 // check urls for normal import paths
@@ -4892,6 +4970,9 @@ class Compiler
 
         $this->pushEnv();
 
+        $storeEnv = $this->storeEnv;
+        $this->storeEnv = $this->env;
+
         // set the args
         if (isset($func->args)) {
             $this->applyArguments($func->args, $argValues);
@@ -4911,6 +4992,8 @@ class Compiler
         }
 
         $ret = $this->compileChildren($func->children, $tmp, $this->env->marker . " " . $name);
+
+        $this->storeEnv = $storeEnv;
 
         $this->popEnv();
 
